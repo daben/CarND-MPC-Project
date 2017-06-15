@@ -4,10 +4,17 @@
 #include "Eigen-3.3/Eigen/Core"
 
 using CppAD::AD;
+using Eigen::VectorXd;
 
+namespace ad = CppAD;
+
+
+// Refactored the global variables as members of MPC.
+#if 0
 // TODO: Set the timestep length and duration
 size_t N = 0;
 double dt = 0;
+#endif
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -19,30 +26,95 @@ double dt = 0;
 // presented in the classroom matched the previous radius.
 //
 // This is the length from front to CoG that has a similar radius.
-const double Lf = 2.67;
+constexpr double Lf = 2.67;
+
 
 class FG_eval {
  public:
+  // timestep length
+  size_t N;
+  // timestep duration
+  double dt;
   // Fitted polynomial coefficients
-  Eigen::VectorXd coeffs;
-  FG_eval(Eigen::VectorXd coeffs) { this->coeffs = coeffs; }
+  VectorXd coeffs;
+
+  // variable offsets in the vars vector.
+  struct {
+    size_t x, y, psi, v, cte, epsi, delta, a;
+  } var;
+
+  struct {
+    double cte{0}, epsi{0}, v{100};
+  } target;
+
+  FG_eval(size_t N, double dt, VectorXd coeffs)
+  : N(N), dt(dt), coeffs(coeffs),
+    // The solver takes all the state variables and actuator
+    // variables in a singular vector. Thus, we should to establish
+    // when one variable starts and another ends to make our lifes easier.
+    var({0, N, 2*N, 3*N, 4*N, 5*N, 6*N, 7*N-1})
+  {}
 
   typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
   void operator()(ADvector& fg, const ADvector& vars) {
-    // TODO: implement MPC
-    // `fg` a vector of the cost constraints, `vars` is a vector of variable values (state & actuators)
-    // NOTE: You'll probably go back and forth between this function and
-    // the Solver function below.
+    // `fg` a vector of the cost constraints,
+    // `vars` is a vector of variables
+    
+    // Cost
+    // ======================================================
+
+    // The cost is stored is the first element of `fg`.
+    // Any additions to the cost should be added to `fg[0]`.
+    fg[0] = 0;
+
+    // Reference state cost
+    for (int t = 0; t < N; t++) {
+      fg[0] += ad::pow(vars[var.cte  + t], 2);
+      fg[0] += ad::pow(vars[var.epsi + t], 2);
+      fg[0] += ad::pow(vars[var.v    + t] - target.v, 2);
+    }
+
+    // Minimize the use of actuators.
+    for (int t = 0; t < N - 1; t++) {
+      fg[0] += ad::pow(vars[var.delta + t], 2);
+      fg[0] += ad::pow(vars[var.a     + t], 2);
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int t = 0; t < N - 2; t++) {
+      fg[0] += ad::pow(vars[var.delta + t + 1] - vars[var.delta + t], 2);
+      fg[0] += ad::pow(vars[var.a     + t + 1] - vars[var.a     + t], 2);
+    }
+
+
+    // Constraints
+    // ======================================================
+    
+    // We add 1 to each of the starting indices due to cost being located at
+    // index 0 of `fg`.
+    // This bumps up the position of all the other values.
+    fg[1 + var.x   ] = vars[var.x];
+    fg[1 + var.y   ] = vars[var.y];
+    fg[1 + var.psi ] = vars[var.psi];
+    fg[1 + var.v   ] = vars[var.v];
+    fg[1 + var.cte ] = vars[var.cte];
+    fg[1 + var.epsi] = vars[var.epsi];
+    
+    for(int t = 1; t < N; t++) {
+      // Model
+    }
   }
 };
 
 //
 // MPC class definition implementation.
 //
-MPC::MPC() {}
+MPC::MPC(size_t N, double dt)
+  : N(N), dt(dt) {}
+
 MPC::~MPC() {}
 
-vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
+std::vector<double> MPC::Solve(VectorXd state, VectorXd coeffs) {
   bool ok = true;
   size_t i;
   typedef CPPAD_TESTVECTOR(double) Dvector;
@@ -77,7 +149,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   }
 
   // object that computes objective and constraints
-  FG_eval fg_eval(coeffs);
+  FG_eval fg_eval(N, dt, coeffs);
 
   //
   // NOTE: You don't have to worry about these options
@@ -98,15 +170,15 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   options += "Numeric max_cpu_time          0.5\n";
 
   // place to return solution
-  CppAD::ipopt::solve_result<Dvector> solution;
+  ad::ipopt::solve_result<Dvector> solution;
 
   // solve the problem
-  CppAD::ipopt::solve<Dvector, FG_eval>(
+  ad::ipopt::solve<Dvector, FG_eval>(
       options, vars, vars_lowerbound, vars_upperbound, constraints_lowerbound,
       constraints_upperbound, fg_eval, solution);
 
   // Check some of the solution values
-  ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
+  ok &= solution.status == ad::ipopt::solve_result<Dvector>::success;
 
   // Cost
   auto cost = solution.obj_value;
