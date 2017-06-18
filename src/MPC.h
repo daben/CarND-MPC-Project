@@ -3,19 +3,22 @@
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
 
+using namespace std;
+
 class MPC {
  public:
-  // Timestep length
-  size_t N;
-  // Timestemp duration
-  double dt;
-  
- public:
-  MPC(size_t N, double dt);
+  MPC();
 
   virtual ~MPC();
 
+  struct Result {
+    double cost;
+    double delta;
+    double a;
+    vector<double> x;
+    vector<double> y;
+  };
   // Solve the model given an initial state and polynomial coefficients.
   // Return the first actuations.
-  std::vector<double> Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs);
+  bool Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, Result &result);
 };
