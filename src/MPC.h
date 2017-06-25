@@ -20,5 +20,5 @@ class MPC {
   };
   // Solve the model given an initial state and polynomial coefficients.
   // Return the first actuations.
-  bool Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, Result &result);
+  bool Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, double radius, Result &result);
 };

@@ -9,8 +9,8 @@ using Eigen::VectorXd;
 namespace ad = CppAD;
 
 // Set the timestep length and duration
-size_t N    =   10;
-double dt   = 0.08;
+size_t N    =   15;
+double dt   =  0.1;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -25,21 +25,21 @@ double dt   = 0.08;
 constexpr double Lf   = 2.67;
 
 // Target values
-double ref_cte    =     0;
-double ref_epsi   =     0;
-double ref_v      =   120;
+double ref_cte    =   0.0;
+double ref_epsi   =   0.0;
+double ref_v_mph  = 130.0;
 
 // Loss weights
-double Wcte       =  800.0;
-double Wepsi      =  300.0;
-double Wdelta     = 4000.0;
-double Wddelta    =    1e7;
-double Wv         =    1.0;
-double Wa         =    1.0;
-double Wda        =    1.0;
+double Wcte       =    0.7;
+double Wepsi      =   50.0;
+double Wdelta     =   50.0;
+double Wddelta    =    1e3;
+double Wv         =    0.1;
+double Wa         =    0.1;
+double Wda        =    0.1;
 
 // For tuning the parameters from the commandline
-// For example `env ref_v=200 ./mpc` will set the
+// For example `env ref_v_mph=200 ./mpc` will set the
 // target speed to 200... and most probably will
 // send the car to the river!
 static void init_globals_from_environment() {
@@ -50,7 +50,7 @@ static void init_globals_from_environment() {
   value = getenv("dt");
   if (value) dt = atof(value);
   value = getenv("ref_v");
-  if (value) ref_v = atof(value);
+  if (value) ref_v_mph = atof(value);
 
   value = getenv("Wcte");
   if (value) Wcte = atof(value);
@@ -118,8 +118,30 @@ class FG_eval {
   const variables var;
   // Fitted polynomial coefficients
   Eigen::VectorXd coeffs;
-  FG_eval(Eigen::VectorXd coeffs)
-    : var(N), coeffs(coeffs) {}
+  // target speed in m/s
+  double ref_v;
+  // radius of curvature
+  double radius;
+
+  FG_eval(Eigen::VectorXd coeffs, double radius)
+    : var(N), coeffs(coeffs), radius(radius)
+  {
+    // Set target speed depending on radius of curvature
+    const double
+      v_lo = 50, v_hi = ref_v_mph,
+      r_lo = 35, r_hi = 70;
+
+    double v_mph;
+
+    if (radius < r_lo)
+      v_mph = v_lo;
+    else if  (radius < r_hi)
+      v_mph = v_lo + (v_hi - v_lo) * (radius - r_lo) / (r_hi - r_lo);
+    else
+      v_mph = v_hi;
+
+    ref_v = mph2mps(v_mph);
+  }
 
   using ADdouble = AD<double>;
   typedef CPPAD_TESTVECTOR(ADdouble) ADvector;
@@ -139,7 +161,7 @@ class FG_eval {
     for (int t = 0; t < N; t++) {
       fg[0] +=  Wcte  * ad::pow(vars[var.cte(t) ] - ref_cte,  2);
       fg[0] +=  Wepsi * ad::pow(vars[var.epsi(t)] - ref_epsi, 2);
-      fg[0] +=  Wv    * ad::pow(vars[var.v(t)   ] - ref_v,    2);
+      fg[0] +=  Wv    * ad::pow(vars[var.v(t)   ] - ref_v,  2);
     }
 
     // Minimize the use of actuators
@@ -212,13 +234,13 @@ class FG_eval {
 MPC::MPC() {
   init_globals_from_environment();
   // Log the set of parameters for reference.
-  printf("N=%d  dt=%.2f  ref_v=%.0f  Wcte=%.1f  Wepsi=%.1f  Wv=%.1f  Wdelta=%.1f  Wa=%.1f  Wddelta=%.1f  Wda=%.1f\n",
-         (int)N, dt, ref_v, Wcte, Wepsi, Wv, Wdelta, Wa, Wddelta, Wda);
+  printf("N=%d; dt=%.2f; ref_v=%.0f; Wcte=%.1f; Wepsi=%.1f; Wv=%.2f; Wdelta=%.1f; Wa=%.1f; Wddelta=%.1f; Wda=%.1f\n",
+         (int)N, dt, ref_v_mph, Wcte, Wepsi, Wv, Wdelta, Wa, Wddelta, Wda);
 }
 
 MPC::~MPC() {}
 
-bool MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, Result &result) {
+bool MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, double radius, Result &result) {
   typedef CPPAD_TESTVECTOR(double) Dvector;
 
   // Variables offsets
@@ -299,7 +321,7 @@ bool MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, Result &result) {
   constraints_upperbound[var.epsi] = epsi;
 
   // object that computes the objective and constraints
-  FG_eval fg_eval(coeffs);
+  FG_eval fg_eval(coeffs, radius);
 
   //
   // NOTE: You don't have to worry about these options
@@ -337,7 +359,9 @@ bool MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, Result &result) {
   // next x, y coordinates
   result.x.clear();
   result.y.clear();
-  for (int t = 1; t < N; t++) {
+  // skip the first 2 points to cover for the latency and avoid the line
+  // being painting behind the car
+  for (int t = 2; t < N; t++) {
     result.x.push_back(solution.x[var.x(t)]);
     result.y.push_back(solution.x[var.y(t)]);
   }

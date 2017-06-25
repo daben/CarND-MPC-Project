@@ -13,11 +13,6 @@
 // for convenience
 using json = nlohmann::json;
 
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-constexpr double deg2rad(double x) { return x * pi() / 180; }
-constexpr double rad2deg(double x) { return x * 180 / pi(); }
-
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
@@ -50,6 +45,16 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
 int main() {
   uWS::Hub h;
 
+  // Latency in seconds. We are simulating a latency in the actuator
+  // of 100 ms + an extra to account for the time involved in computing.
+  double latency = 0.15;
+  {
+    // allow the user to specify the latency
+    char *value = getenv("latency");
+    if (value) latency = atof(value);
+    printf("Latency=%.2f; ", latency);
+  }
+
   // MPC is initialized here!
   MPC mpc;
 
@@ -77,17 +82,26 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
+
+          // waypoints, I assume they come in meters...
           vector<double> ptsx = j[1]["ptsx"];
           vector<double> ptsy = j[1]["ptsy"];
+          // car position in global coordinates
           double px = j[1]["x"];
           double py = j[1]["y"];
+          // orientation in radians
           double psi = j[1]["psi"];
-          double v = j[1]["speed"];
+          // speed in MPH
+          double speed = j[1]["speed"];
 
           // Current steering angle in radians
           double steer_value = j[1]["steering_angle"];
           // Current throttle value normalized [-1, 1]
           double throttle_value = j[1]["throttle"];
+
+          // The speed comes in MPH
+          double v = mph2mps(speed);
+          double accel = throttle_value;
 
           /*
           * Calculate steering angle and throttle using MPC.
@@ -101,18 +115,20 @@ int main() {
           // Handle the latency predicting the state of the system
           // from the current state.
 
-          // Latency in seconds. We are simulating a latency in the actuator
-          // of 100 ms, I add here an 30 ms for the time involved in computing.
-          constexpr double latency = 0.13;
-          // from MPC.cpp...
-          constexpr double Lf = 2.67;
-
           // Kinematic model
-          px  += v * cos(psi) * latency;
-          py  += v * sin(psi) * latency;
-          v   += throttle_value * latency;
-          // Note the minus sign to apply correct meaning of the steer_value
-          psi -= v * steer_value * deg2rad(25) / Lf * latency;
+          if (latency > 1e-3) {
+            // from MPC.cpp...
+            const double Lf = 2.67;
+            const double
+              cos_psi = cos(psi),
+              sin_psi = sin(psi);
+
+            px  += v * cos_psi * latency + 0.5 * accel * cos_psi * pow(latency, 2);
+            py  += v * sin_psi * latency + 0.5 * accel * sin_psi * pow(latency, 2);
+            v   += accel * latency;
+            // Note the minus sign to apply correct meaning of the steer_value
+            psi -= v * steer_value / Lf * latency;
+          }
 
           // Convert waypoints to car coordinates
           Eigen::VectorXd ptsx_v(6);
@@ -125,6 +141,7 @@ int main() {
               // The compiler should put these guys outside the loop.
               cos_psi = cos(psi),
               sin_psi = sin(psi);
+
             ptsx_v[i] =   dx * cos_psi + dy * sin_psi;
             ptsy_v[i] = - dx * sin_psi + dy * cos_psi;
           }
@@ -136,7 +153,7 @@ int main() {
 
           // cte: shortest distance from the origin to the polynomial curve.
           // We could compute the actual distance
-          //double cte = polyCTE(coeffs, 3);
+          // double cte = polycte(coeffs, 3);
           //
           // But approximating it with the horizontal distance at the origin
           // it's quite good already.
@@ -152,6 +169,10 @@ int main() {
           // with psi = x = 0:
           double epsi = -atan(coeffs[1]);
 
+          // Radius of curvature 3m ahead, computed over a polynomial
+          // of second degree
+          double radius = polyroc(polyfit(ptsx_v, ptsy_v, 2), 2, 3);
+
           // Update the state
           Eigen::VectorXd state(6);
           state << /*px*/0, /*py*/0, /*psi*/0, v, cte, epsi;
@@ -159,7 +180,7 @@ int main() {
           // Solve the MPC for this state
           MPC::Result result;
 
-          bool ok = mpc.Solve(state, coeffs, result);
+          bool ok = mpc.Solve(state, coeffs, radius, result);
 
           const auto mpc_elapsed = clock.elapsed();
 
@@ -170,10 +191,13 @@ int main() {
             fprintf(stdout,
                     "Cost = %8.2e; δ = %6.3f; a = %6.3f; "
                     "cte = %7.3f; eψ = %11.8f; "
-                    "x = %7.2f; y = %7.2f; "
+                    "x = %7.2f; y = %7.2f; speed = %6.2f; "
+                    "Radius = %7.3f; "
                     "Solve(ms) = %6.3f\n",
                     result.cost, steer_value, throttle_value,
-                    cte, epsi, px, py, mpc_elapsed);
+                    cte, epsi, px, py, speed,
+                    radius,
+                    mpc_elapsed * 1e3);
 
           } else {
             // We should do something better here...

@@ -5,6 +5,16 @@
 #include <functional>
 #include <vector>
 
+// For converting back and forth between radians and degrees.
+constexpr double pi() { return M_PI; }
+inline double deg2rad(double x) { return x * pi() / 180; }
+inline double rad2deg(double x) { return x * 180 / pi(); }
+
+// miles/hour to meters/second
+inline double mph2mps(double x) {
+  return x * 0.44704;
+}
+
 // Util to benchmark code
 struct benchmark {
   using clock = std::chrono::high_resolution_clock;
@@ -56,8 +66,8 @@ void polysquare(const T& c, const size_t order, R& c2) {
 // Simultaneously evaluate a polynomial and its derivatives.
 // It returns pd = {c(x), dc(x), ddc(x), ...} upto the size of pd.
 template <typename T>
-void ddpoly(const T &c, const double x, std::vector<double> &pd) {
-  const int nc = c.size() - 1;
+void ddpoly(const T &c, const size_t order, const double x, std::vector<double> &pd) {
+  const int nc = order;
   const int nd = pd.size() - 1;
   pd[0] = c[nc];
   for (int i = 1; i < nd; i++)
@@ -78,12 +88,19 @@ inline int sign(const T& z) {
   return (T(0) < z) - (z < T(0));
 }
 
+template <typename T>
+double polyroc(const T &c, const size_t order, const double x) {
+  std::vector<double> pd(3);
+  ddpoly(c, order, x, pd);
+  return pow(1 + pd[1]*pd[1], 1.5) / pd[2];
+}
+
 // Compute the crosstrack error to a polynomial curve of given order.
 // In car coordinates, the CTE is the shortest distance of the polynomial
 // to the origin. We compute it minimizing the squared distance by finding
 // the root of the derivative closest to the initial point `x0`.
 template <typename T>
-double polyCTE(const T& c,
+double polycte(const T& c,
                const size_t order,
                double x0=0.0,
                const double tol=1e-4,
@@ -104,7 +121,7 @@ double polyCTE(const T& c,
   for(size_t i = 0; i < max_iterations; i++) {
     // pd[1] is first derivative
     // pd[2] is second derivative
-    ddpoly(dist, x0, pd);
+    ddpoly(dist, order, x0, pd);
 
     // Check division by 0.
     if (std::fabs(pd[2]) < eps)
